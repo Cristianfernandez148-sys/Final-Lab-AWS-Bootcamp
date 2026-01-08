@@ -1,0 +1,60 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: "Lab 4 - Signed URL File Gateway (Serverless)"
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 10
+    MemorySize: 256
+    Environment:
+      Variables:
+        UPLOAD_EXPIRES_SECONDS: "900"     # 15 min
+        DOWNLOAD_EXPIRES_SECONDS: "3600"  # 1 hour
+
+Resources:
+  FileBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "coderoad-lab4-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+
+  FileGatewayFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref FileBucket
+        - S3WritePolicy:
+            BucketName: !Ref FileBucket
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref FileBucket
+      Events:
+        Upload:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /files
+            Method: POST
+        Download:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /files/{objectKey+}
+            Method: GET
+
+Outputs:
+  ApiBaseUrl:
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  BucketName:
+    Value: !Ref FileBucket
