@@ -24,94 +24,82 @@ without exposing AWS credentials or making the bucket public.
 5. API returns an HTTP 302 redirect with a signed S3 GET URL.
 6. Client follows the redirect and downloads the file from S3.
 
-The API never handles file data directly, ensuring scalability and cost
-efficiency.
-
----
-
-## HTTP API
-
-### POST /files — Generate upload URL
-
-Generates a short-lived pre-signed Amazon S3 PUT URL.
-
-**Request**
-```json
-{
-  "filename": "hello.txt",
-  "contentType": "text/plain"
-}
-```
-
-**Response**
-```json
-{
-  "objectKey": "uploads/<generated>_hello.txt",
-  "uploadUrl": "https://<bucket>.s3.amazonaws.com/uploads/...?X-Amz-Signature=...",
-  "expiresInSeconds": 900,
-  "method": "PUT",
-  "requiredHeaders": {
-    "content-type": "text/plain"
-  }
-}
-```
-
----
-
-### GET /files/{objectKey} — Download file
-
-Returns an HTTP redirect to a pre-signed S3 GET URL.
-
-**Response**
-- Status: `302 Found`
-- Header:
-  - `Location: <pre-signed S3 download URL>`
-
-**Why HTTP 302?**
-
-Using a redirect ensures that file downloads are handled directly by
-Amazon S3, avoiding file proxying through API Gateway or Lambda and
-improving scalability.
-
----
-
-## Infrastructure as Code
-
-Infrastructure is defined using **AWS SAM**.
-
-Key resources:
-- Private S3 bucket with public access blocked
-- Lambda function to generate pre-signed URLs
-- HTTP API routes for upload and download
-- IAM role following least-privilege principles
-
----
-
-## Application Code (Lambda)
-
-The Lambda function is written in Python and uses `boto3` to generate
-pre-signed URLs for S3 operations. The function never processes file
-contents directly.
-
 ---
 
 ## Deployment Instructions (GitHub Actions + OIDC)
 
 This project is deployed automatically using **GitHub Actions** with
-**OIDC authentication**. No long-lived AWS credentials are stored in the
+**OpenID Connect (OIDC)**. No long-lived AWS access keys are stored in the
 repository.
 
 ### Prerequisites
+
 - An AWS account
-- An IAM role configured for GitHub OIDC (with permission to deploy SAM/CloudFormation)
+- An AWS IAM Role for GitHub Actions named **githubconnect**
 - GitHub repository variables:
-  - `AWS_ACCOUNT_ID`
-- AWS region configured in the workflow (e.g., `us-east-1`)
+  - `AWS_ACCOUNT_ID` — AWS account number
+  - `AWS_REGION` — AWS region where the stack will be deployed (e.g. `us-east-1`)
+- GitHub Actions enabled on the repository
+
+### AWS Region Configuration
+
+The deployment workflow (`deploy.yaml`) uses the `AWS_REGION` repository
+variable to define the target AWS region. All AWS resources (API Gateway,
+Lambda, and S3) are created in this region.
+
+Example usage inside the workflow:
+```yaml
+- name: Configure AWS credentials via OIDC
+  uses: aws-actions/configure-aws-credentials@v4
+  with:
+    role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/githubconnect
+    aws-region: ${{ vars.AWS_REGION }}
+```
+
+### IAM Role (githubconnect)
+
+The IAM role **githubconnect** is required for GitHub Actions to deploy
+infrastructure using OIDC.
+
+Role ARN format:
+```
+arn:aws:iam::<AWS_ACCOUNT_ID>:role/githubconnect
+```
+
+The role must:
+- Trust GitHub as an OIDC federated identity provider
+- Allow `sts:AssumeRoleWithWebIdentity`
+- Grant permissions to deploy CloudFormation/SAM stacks and related AWS resources
+
+Example trust policy:
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<AWS_ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "token.actions.githubusercontent.com:sub": "repo:<ORG>/<REPO>:*"
+        }
+      }
+    }
+  ]
+}
+```
 
 ### Deployment Steps
+
 1. Clone the repository:
 ```bash
-git clone <your-repository-url>
+git clone <repository-url>
 cd <repository-folder>
 ```
 
@@ -122,20 +110,22 @@ git commit -m "Deploy serverless file gateway"
 git push origin main
 ```
 
-3. GitHub Actions will automatically:
-- Authenticate to AWS using OIDC
+3. GitHub Actions workflow (`deploy.yaml`) will:
+- Authenticate to AWS using OIDC and the `githubconnect` role
+- Use the `AWS_REGION` variable to select the deployment region
 - Build the AWS SAM application
 - Deploy or update the CloudFormation stack
 
-4. Once the workflow completes successfully, retrieve the API Base URL
-from the GitHub Actions output or CloudFormation stack outputs.
+4. After a successful run, retrieve the **API Base URL** from:
+- GitHub Actions job output, or
+- CloudFormation stack outputs (`ApiBaseUrl`)
 
 ---
 
 ## Proof of Functionality (PowerShell)
 
 ```powershell
-$env:API_BASE = "https://<api-id>.execute-api.<region>.amazonaws.com"
+$env:API_BASE = "https://<api-id>.execute-api.<AWS_REGION>.amazonaws.com"
 ```
 
 ```powershell
